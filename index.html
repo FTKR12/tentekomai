@@ -582,13 +582,13 @@ kbd{font-family:var(--font-slip);font-size:12px;padding:1px 6px;border-radius:5p
         <h3>そうさ</h3>
         <div class="tbl-wrap">
           <table class="keys">
-            <thead><tr><th scope="col"></th><th scope="col">移動</th><th scope="col">取る・置く</th><th scope="col">切る・洗う・消火</th></tr></thead>
+            <thead><tr><th scope="col"></th><th scope="col">移動</th><th scope="col">取る・置く</th><th scope="col">切る・洗う・消火・投げる</th></tr></thead>
             <tbody>
               <tr><th scope="row">ひとり</th><td><kbd>WASD</kbd> / <kbd>矢印</kbd></td><td><kbd>Space</kbd> / <kbd>J</kbd></td><td><kbd>Shift</kbd> / <kbd>K</kbd></td></tr>
               <tr><th scope="row">ふたり 1P</th><td><kbd>WASD</kbd></td><td><kbd>Space</kbd></td><td><kbd>左Shift</kbd> / <kbd>E</kbd></td></tr>
               <tr><th scope="row">ふたり 2P</th><td><kbd>矢印</kbd></td><td><kbd>Enter</kbd></td><td><kbd>右Shift</kbd> / <kbd>/</kbd></td></tr>
               <tr><th scope="row">スマホ</th><td>左側をドラッグ</td><td>黄色のボタン</td><td>赤いボタン</td></tr>
-              <tr><th scope="row">スマホ2台</th><td colspan="3">「ふたりで あそぶ」→「スマホ2台で」。1台目がテーブルを作り、2台目が参加</td></tr>
+              <tr><th scope="row">スマホ2台</th><td colspan="3">「ふたりで あそぶ」→「スマホ2台で」か「スマホ2台で（合言葉）」</td></tr>
               <tr><th scope="row">ゲームパッド</th><td>スティック</td><td><kbd>A</kbd></td><td><kbd>X</kbd></td></tr>
             </tbody>
           </table>
@@ -601,6 +601,9 @@ kbd{font-family:var(--font-slip);font-size:12px;padding:1px 6px;border-radius:5p
           <li>ベルトに置いた物は矢印の向きに運ばれる。よごれたお皿をベルトで洗い場へ送れるステージもある。</li>
           <li>ベルトの先が提供口なら、完成したお皿をのせるだけで料理を出せる。</li>
           <li>停電するステージでは、シェフのまわりしか見えない。鍋のマークとピピピの音をたよりに。</li>
+          <li>「投げる」ステージでは、食材を持ってアクションを押すと向いている方へ投げられる。カウンター・鍋・お皿に入るし、向かい合ったなかまはキャッチできる。</li>
+          <li>空にうかぶステージでは、端から落ちると少しの間戻れない。床がゆれたら、動き出す合図。</li>
+          <li>うずまきの床は同じ色どうしでワープ。矢印の床に乗ると流される。</li>
           <li>スマホ2台で遊ぶときは、テーブルを作った側が献立をえらんでスタートします。</li>
           <li>一時停止は <kbd>Esc</kbd> か右上のボタン。</li>
         </ul>
@@ -654,8 +657,9 @@ kbd{font-family:var(--font-slip);font-size:12px;padding:1px 6px;border-radius:5p
 (() => {
 'use strict';
 // ===== data: tiles, ingredients, recipes, stages =====
-const TILE = { FLOOR: 0, ICE: 1, COUNTER: 2, CRATE: 3, BOARD: 4, STOVE: 5, PASS: 6, RACK: 7, SINK: 8, RETURN: 9, TRASH: 10, WALL: 11, BELT: 12 };
-const isWalk = t => t === TILE.FLOOR || t === TILE.ICE;
+const TILE = { FLOOR: 0, ICE: 1, COUNTER: 2, CRATE: 3, BOARD: 4, STOVE: 5, PASS: 6, RACK: 7, SINK: 8, RETURN: 9, TRASH: 10, WALL: 11, BELT: 12, SKY: 13, PORTAL: 14, WALKWAY: 15 };
+// floor a chef can stand on (sky is open air: walk onto it and you fall)
+const isWalk = t => t === TILE.FLOOR || t === TILE.ICE || t === TILE.PORTAL || t === TILE.WALKWAY;
 const FLAMMABLE = new Set([TILE.COUNTER, TILE.CRATE, TILE.BOARD, TILE.STOVE, TILE.RACK]);
 const TILE_NAME = {
   [TILE.BOARD]: 'まな板', [TILE.STOVE]: 'コンロ', [TILE.PASS]: '提供口', [TILE.RACK]: 'お皿',
@@ -663,6 +667,13 @@ const TILE_NAME = {
 };
 const BELT_DIR = { '>': [1, 0], '<': [-1, 0], '^': [0, -1], 'v': [0, 1] };
 const BELT_TIME = 1.1; // seconds for an item to ride one belt tile
+// moving floor that carries chefs (not items)
+const WALK_DIR = { '→': [1, 0], '←': [-1, 0], '↑': [0, -1], '↓': [0, 1] };
+const WALK_SPEED = 2.4;
+// throwing (stage.throw): an ingredient flies this far, this fast
+const THROW_RANGE = 5.6, THROW_SPEED = 11;
+// a chef who falls off is back at their start after DOWN_TIME (the fall itself takes FALL_ANIM)
+const DOWN_TIME = 3.4, FALL_ANIM = 0.8;
 const CRATES = {
   t: 'tomato', o: 'onion', m: 'mushroom', l: 'lettuce', k: 'meat', b: 'bun', f: 'fish', r: 'rice', n: 'nori', c: 'cucumber',
   j: 'potato', g: 'chicken', e: 'shrimp', q: 'cheese', a: 'carrot', u: 'udon', z: 'negi',
@@ -728,6 +739,10 @@ const RECIPES = {
 //             D plates  H sink  U dirty-plate return  G trash  E counter+extinguisher  1/2 chef spawn
 //             lowercase = crate (see CRATES)  > < ^ v conveyor belt moving that way
 // stage.dark = lights-out cycle on the stage clock: first blackout at `first` s, then every `every` s, for `dur` s
+//             _ sky (walk onto it and you fall)  O / Q portal pairs  → ← ↑ ↓ moving walkway
+// stage.sky = the kitchen floats in the sky; stage.throw = ingredients can be thrown (action button)
+// stage.islands = parts of the kitchen that move: rect [x0, y0, x1, y1] (its tiles in the map above),
+//             way = [[dx, dy, seconds to stay], ...] offsets it visits in turn, speed in tiles per second
 const STAGES = [
   {
     name: 'はじめての厨房', sub: 'まずはスープから。切って、煮て、盛って、出す！',
@@ -935,6 +950,116 @@ const STAGES = [
       'CjCjCGCECCYCPCC',
     ],
   },
+  {
+    name: '天空のサラダ館', sub: '空にうかぶ2つの島。すきまの向こうへは、食材を投げてわたそう！',
+    time: 180, menu: ['salad', 'tomato_soup', 'onion_soup'], plates: 4, dirty: false, fire: false, burn: 14,
+    sky: true, throw: true,
+    stars: [40, 110, 180], spawn: [19, 14], max: [4, 5], tags: [['空中', 1], ['投げる', 0]],
+    notes: ['食材を持って「アクション」で投げられる。すきまの向こうのカウンターへ投げこもう', '端から落ちると、しばらく戻れない。持っていた物もなくなるよ'],
+    map: [
+      'CtlCXC___CSCSCC',
+      'o.....___C....W',
+      'o.1X..___C..2.W',
+      'C..X..___C....C',
+      'C.............D',
+      'G.....___C....C',
+      'C.....___.....C',
+      '_______________',
+    ],
+  },
+  {
+    name: '分断キッチン', sub: 'ときどき厨房がまっぷたつ！ 離れているあいだは、投げてつなごう。',
+    time: 180, menu: ['burger', 'burger_l', 'burger_dx'], plates: 4, dirty: false, fire: true, burn: 12,
+    sky: true, throw: true,
+    islands: [{ rect: [7, 0, 11, 7], way: [[0, 0, 24], [3, 0, 14]], speed: 1.2 }],
+    stars: [40, 120, 200], spawn: [19, 14], max: [4, 5], tags: [['分断', 1], ['投げる', 0], ['火事', 1]],
+    notes: ['木の床の右半分は、時間で離れていく。ゆれ始めたら、どちらに残るか決めよう', '切ったお肉は、すきまの向こうのフライパン（左はしの段）へ投げこめる'],
+    map: [
+      'CkCbCXCPCCCC___',
+      'l..........W___',
+      'l.1X...C.2.W___',
+      'C..X.......E___',
+      't......P...D___',
+      't..C.......C___',
+      'G..C...C...C___',
+      'C..........C___',
+      '_______________',
+    ],
+  },
+  {
+    name: '空中ゴンドラ', sub: '島と島をつなぐのは、行ったり来たりのゴンドラだけ。',
+    time: 180, menu: ['nigiri', 'tekka', 'kappa'], plates: 4, dirty: false, fire: true, burn: 12,
+    sky: true, throw: true,
+    islands: [{ rect: [5, 3, 6, 4], way: [[0, 0, 3], [3, 0, 3]], speed: 1.3 }],
+    stars: [40, 120, 200], spawn: [19, 14], max: [4, 5], tags: [['ゴンドラ', 1], ['投げる', 0], ['火事', 1]],
+    notes: ['木の床のゴンドラに乗って向こうの島へ。乗りおりのタイミングに気をつけて', '切ったネタは、向こうのカウンターへ投げてもとどく'],
+    map: [
+      'CfCXC_____CSCSC',
+      'f...._____C...W',
+      'c.1X._____C.2.W',
+      'c......___....C',
+      'C......___....D',
+      'n..X._____C..rC',
+      'C...._____G...E',
+      '_______________',
+    ],
+  },
+  {
+    name: '魔法のまかない', sub: 'かべの向こうへは、ふしぎなワープ床で。食材もワープできる！',
+    time: 180, menu: ['fries', 'karaage', 'tendon'], plates: 4, dirty: false, fire: true, burn: 10,
+    throw: true,
+    stars: [40, 110, 190], spawn: [18, 13], max: [4, 5], tags: [['ワープ', 1], ['投げる', 0], ['揚げ物', 0], ['火事', 1]],
+    notes: ['同じ色のうずまきどうしがつながっている。乗るとワープ！', 'うずまきに向かって投げた食材も、向こう側へワープする'],
+    map: [
+      'CjCgCl#CYSYCC',
+      'e.....#Q....W',
+      'e.1..O#.2...W',
+      'C.....#.....C',
+      'X.CX..#O..C.D',
+      'C.....#...C.G',
+      'G....Q#.....C',
+      'C.....#.....r',
+      'CCCCCC#CCECCC',
+    ],
+  },
+  {
+    name: '動く歩道の食堂', sub: '床がぐるぐる流れる食堂。流れに乗れば速いけど、さからうと進まない。',
+    time: 180, menu: ['kake_udon', 'ten_udon', 'karaage'], plates: 4, dirty: true, fire: true, burn: 10,
+    throw: true,
+    stars: [45, 120, 200], spawn: [18, 13], max: [4, 5], tags: [['動く歩道', 1], ['投げる', 0], ['皿洗い', 0], ['火事', 1]],
+    notes: ['矢印の床に乗ると流される。上は右へ、下は左へ', 'うどんは鍋でゆで、エビととり肉はフライヤーで揚げる'],
+    map: [
+      'CuuCSCSCYCYCC',
+      'z...........W',
+      'z.1→→→→→→→..W',
+      'C..XCCCCX...U',
+      'g..←←←←←←←.2H',
+      'g...........D',
+      'CeCeCGCElCCCC',
+    ],
+  },
+  {
+    name: '雲の上の大宴会', sub: '左右の島が離れたりくっついたり。投げて、走って、大宴会を乗りきろう！',
+    time: 210, menu: ['tomato_soup', 'salad', 'burger_l', 'fries'], plates: 5, dirty: true, fire: true, burn: 9, lifeMul: 0.9,
+    sky: true, throw: true,
+    islands: [
+      { rect: [1, 0, 6, 7], way: [[0, 0, 20], [-1, 0, 16]], speed: 1, phase: 4 },
+      { rect: [7, 0, 12, 7], way: [[0, 0, 26], [2, 0, 12]], speed: 1.2 },
+    ],
+    stars: [60, 160, 250], spawn: [15, 10], max: [5, 6], tags: [['最難関', 1], ['分断', 1], ['投げる', 0], ['皿洗い', 0], ['火事', 1]],
+    notes: ['左右の島が別々のタイミングで離れる。すきまが広いときは投げてわたそう', '揚げ物・スープ・バーガー・サラダの4品。役わりを分けよう'],
+    map: [
+      '_CtClCXSCPCYC__',
+      '_k......C...W__',
+      '_k.1X.......W__',
+      '_C..X...C.2.U__',
+      '_b..........G__',
+      '_b..C...C...H__',
+      '_j..C.......D__',
+      '_jGC....CC..E__',
+      '_______________',
+    ],
+  },
 ];
 
 function thresholds(i, players) {
@@ -1082,6 +1207,11 @@ const Sound = (() => {
     flicker: () => { for (const at of [0, 0.28]) tone({ f: 120, d: 0.08, type: 'sawtooth', v: 0.06, at }); },
     lightsOff: () => { tone({ f: 420, f2: 70, d: 0.55, type: 'sawtooth', v: 0.1 }); noise({ d: 0.25, v: 0.12, f: 900, f2: 200, type: 'lowpass' }); },
     lightsOn: () => { tone({ f: 90, f2: 380, d: 0.3, type: 'triangle', v: 0.1 }); tone({ f: 1320, d: 0.12, type: 'sine', v: 0.07, at: 0.26 }); },
+    throw: () => { noise({ d: 0.18, v: 0.16, f: 1200, f2: 3400, q: 1.2 }); tone({ f: 420, f2: 760, d: 0.12, type: 'triangle', v: 0.08 }); },
+    fall: () => { tone({ f: 1400, f2: 180, d: 0.75, type: 'sine', v: 0.16 }); tone({ f: 1050, f2: 140, d: 0.75, type: 'triangle', v: 0.05, at: 0.02 }); },
+    pop: () => { tone({ f: 330, f2: 990, d: 0.14, type: 'sine', v: 0.16 }); tone({ f: 1320, d: 0.1, type: 'triangle', v: 0.08, at: 0.1 }); },
+    warp: () => { tone({ f: 300, f2: 1600, d: 0.22, type: 'sine', v: 0.12 }); tone({ f: 1800, f2: 600, d: 0.25, type: 'triangle', v: 0.06, at: 0.12 }); },
+    rumble: () => { noise({ d: 1.3, v: 0.26, f: 160, f2: 90, type: 'lowpass', q: 0.8 }); tone({ f: 55, f2: 48, d: 1.2, type: 'sawtooth', v: 0.05 }); },
   };
 
   // every effect goes through here so a hosting page can forward it to its partner
@@ -1938,12 +2068,16 @@ function iconURL(draw, px) {
 // ===== engine: state, movement, interactions, cooking, fire, orders =====
 let G = null;
 const SPEED = 4.8, RAD = 0.3;
+const NO_INPUT = Object.freeze({ mx: 0, my: 0, grab: false, act: false, actHeld: false });
 
 function tileAt(x, y) { if (!G || y < 0 || y >= G.rows || x < 0 || x >= G.cols) return null; return G.tiles[y][x]; }
-function solidAt(x, y) { const t = tileAt(x, y); return !t || !isWalk(t.t); }
+// sky is not solid: a chef can step onto it (and falls)
+function solidAt(x, y) { const t = tileAt(x, y); return !t || !(isWalk(t.t) || t.t === TILE.SKY); }
 
 function mkIng(type) { return { k: 'ing', type, state: 'raw', chop: 0 }; }
 function mkPlate() { return { k: 'plate', items: [], soup: null }; }
+// where a pot or the extinguisher goes back to if it falls off (kept out of sight of JSON)
+function setHome(it, t) { Object.defineProperty(it, 'home', { value: t, writable: true, enumerable: false, configurable: true }); return it; }
 function mkCw(k) { return { k, items: [], cook: 0, over: 0, burnt: false, fireT: 0, fired: false, warnT: 0 }; }
 const isCw = it => !!it && (it.k === 'pot' || it.k === 'pan' || it.k === 'fry');
 // a pot holding rice or udon cooks that one thing instead of a soup
@@ -1960,7 +2094,8 @@ function cwReset(cw) { cw.items = []; cw.cook = 0; cw.over = 0; cw.burnt = false
 function cwBurn(cw) { cw.burnt = true; cw.items.forEach(i => { i.state = 'burnt'; }); }
 
 function mkChef(id, p) {
-  return { id, x: p.x, y: p.y, vx: 0, vy: 0, fx: 0, fy: 1, hold: null, work: null, target: null, spraying: false, walkT: 0, say: '', sayT: 0, inp: null, goal: null, goalT: 0, pause: 0 };
+  return { id, x: p.x, y: p.y, vx: 0, vy: 0, fx: 0, fy: 1, hold: null, work: null, target: null, spraying: false, walkT: 0, say: '', sayT: 0, inp: null, goal: null, goalT: 0, pause: 0,
+    home: p.t || null, ride: 0, down: 0, falls: 0, warpLock: null, fallX: 0, fallY: 0 };
 }
 
 function buildGame(stageIdx, players, state) {
@@ -1971,20 +2106,23 @@ function buildGame(stageIdx, players, state) {
     const row = [];
     for (let x = 0; x < cols; x++) {
       const ch = st.map[y][x];
-      const t = { x, y, t: TILE.FLOOR, item: null, crate: null, fire: null, rack: 0, dirty: 0, wash: 0, bump: 0, done: 0, rackTile: null, dir: null, bp: 0 };
+      const t = { x, y, t: TILE.FLOOR, item: null, crate: null, fire: null, rack: 0, dirty: 0, wash: 0, bump: 0, done: 0, rackTile: null, dir: null, bp: 0, isl: 0, pair: null, pkey: '' };
       if (ch === '~') t.t = TILE.ICE;
-      else if (ch === '1' || ch === '2') spawns[ch] = { x: x + 0.5, y: y + 0.5 };
+      else if (ch === '1' || ch === '2') spawns[ch] = { x: x + 0.5, y: y + 0.5, t };
+      else if (ch === '_') t.t = TILE.SKY;
+      else if (ch === 'O' || ch === 'Q') { t.t = TILE.PORTAL; t.pkey = ch; }
+      else if (WALK_DIR[ch]) { t.t = TILE.WALKWAY; t.dir = WALK_DIR[ch]; }
       else if (ch === 'C') t.t = TILE.COUNTER;
       else if (ch === 'X') t.t = TILE.BOARD;
-      else if (ch === 'S') { t.t = TILE.STOVE; t.item = mkCw('pot'); }
-      else if (ch === 'P') { t.t = TILE.STOVE; t.item = mkCw('pan'); }
-      else if (ch === 'Y') { t.t = TILE.STOVE; t.item = mkCw('fry'); }
+      else if (ch === 'S') { t.t = TILE.STOVE; t.item = setHome(mkCw('pot'), t); }
+      else if (ch === 'P') { t.t = TILE.STOVE; t.item = setHome(mkCw('pan'), t); }
+      else if (ch === 'Y') { t.t = TILE.STOVE; t.item = setHome(mkCw('fry'), t); }
       else if (ch === 'W') t.t = TILE.PASS;
       else if (ch === 'D') t.t = TILE.RACK;
       else if (ch === 'H') t.t = TILE.SINK;
       else if (ch === 'U') t.t = TILE.RETURN;
       else if (ch === 'G') t.t = TILE.TRASH;
-      else if (ch === 'E') { t.t = TILE.COUNTER; t.item = { k: 'ext' }; }
+      else if (ch === 'E') { t.t = TILE.COUNTER; t.item = setHome({ k: 'ext' }, t); }
       else if (ch === '#') t.t = TILE.WALL;
       else if (BELT_DIR[ch]) { t.t = TILE.BELT; t.dir = BELT_DIR[ch]; }
       else if (CRATES[ch]) { t.t = TILE.CRATE; t.crate = CRATES[ch]; }
@@ -2008,7 +2146,14 @@ function buildGame(stageIdx, players, state) {
     state: state || 'intro', countdown: 3.6, cdLast: 99, goT: 0, timeupT: 0, flash: 0, fireN: 0,
     hint: stageIdx === 0 ? 0 : -1, tipKey: '', tipT: 0, tipsShown: {}, hurry: false, tickS: 99, prevState: null, resultShown: false,
     uid: 1 + Math.floor(Math.random() * 1e9), online: false, netGuest: false, evs: [], evSeq: 0, replay: false, darkPh: 0,
+    // sky stages: moving islands, things in the air, things falling, things on their way back
+    isl: [], fly: [], pfly: [], drops: [], respawn: [], flyN: 0, ic: 0, sky: !!st.sky || list.some(t => t.t === TILE.SKY),
   };
+  // portals come in pairs marked with the same letter
+  const byKey = {};
+  for (const t of list) if (t.pkey) (byKey[t.pkey] = byKey[t.pkey] || []).push(t);
+  for (const k in byKey) if (byKey[k].length === 2) { byKey[k][0].pair = byKey[k][1]; byKey[k][1].pair = byKey[k][0]; }
+  g.isl = (st.islands || []).map((d, k) => mkIsland(tiles, d, k + 1));
   const sp1 = spawns['1'] || { x: cols / 2, y: rows / 2 };
   const sp2 = spawns['2'] || { x: sp1.x + 1, y: sp1.y };
   g.chefs.push(mkChef(0, sp1));
@@ -2050,6 +2195,9 @@ const TIPS = {
   dark: () => '停電だ！ シェフのまわりだけ見える。マークと音をたよりに',
   joined: () => 'なかまがキッチンに入ったよ！',
   lost: () => 'なかまとの接続が切れました。もどるまで待つか、そのまま続けよう',
+  throw: k => '食材は' + k.act + 'で投げられる！ 向いている方へ飛んでいくよ',
+  island: () => '床がゆれている… 動き出すぞ！ 落ちないように気をつけて',
+  fall: () => '落ちちゃった！ 少し待てばスタート地点に戻れるよ',
 };
 // (a joined phone shows the host's tips instead of making its own)
 function tip(key, dur, again) {
@@ -2059,8 +2207,18 @@ function tip(key, dur, again) {
 
 // ---------------- movement ----------------
 function moveChef(c, mx, my, dt) {
+  // a chef on a moving island moves in that island's frame
+  const r = chefRes(c);
+  c.x -= r.x; c.y -= r.y;
+  moveChefLocal(c, mx, my, dt);
+  c.x += r.x; c.y += r.y;
+}
+function moveChefLocal(c, mx, my, dt) {
   const ft = tileAt(Math.floor(c.x), Math.floor(c.y));
   const ice = !!ft && ft.t === TILE.ICE;
+  // a moving walkway carries whoever stands on it
+  const wk = ft && ft.t === TILE.WALKWAY ? ft.dir : null;
+  const wx = wk ? wk[0] * WALK_SPEED : 0, wy = wk ? wk[1] * WALK_SPEED : 0;
   const accel = ice ? 2.4 : 24;
   const sp = ice ? SPEED * 1.08 : SPEED;
   const k = 1 - Math.exp(-accel * dt);
@@ -2070,8 +2228,8 @@ function moveChef(c, mx, my, dt) {
   if (m > 0.2) { c.fx = mx / m; c.fy = my / m; }
   const v = Math.hypot(c.vx, c.vy);
   if (v > 0.4) c.walkT += dt * v;
-  const steps = Math.max(1, Math.ceil(v * dt / 0.12));
-  for (let s = 0; s < steps; s++) { c.x += c.vx * dt / steps; c.y += c.vy * dt / steps; collide(c, ice); }
+  const steps = Math.max(1, Math.ceil((v + (wk ? WALK_SPEED : 0)) * dt / 0.12));
+  for (let s = 0; s < steps; s++) { c.x += (c.vx + wx) * dt / steps; c.y += (c.vy + wy) * dt / steps; collide(c, ice); }
 }
 function collide(c, ice) {
   for (let iter = 0; iter < 2; iter++) {
@@ -2104,28 +2262,33 @@ function chefPush() {
   if (G.online && cs.length === 2) {
     // only the chef driven on this device yields; the partner's position is theirs
     const mine = G.netGuest ? cs[1] : cs[0], other = G.netGuest ? cs[0] : cs[1];
+    if (mine.down || other.down) return;
     let dx = mine.x - other.x, dy = mine.y - other.y; const d = Math.hypot(dx, dy);
-    if (d < RAD * 2 && d > 1e-6) { const p = RAD * 2 - d; mine.x += dx / d * p; mine.y += dy / d * p; collide(mine, false); }
+    if (d < RAD * 2 && d > 1e-6) { const p = RAD * 2 - d; mine.x += dx / d * p; mine.y += dy / d * p; collideW(mine, false); }
     return;
   }
   for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) {
     const a = cs[i], b = cs[j];
+    if (a.down || b.down) continue;
     let dx = b.x - a.x, dy = b.y - a.y; const d = Math.hypot(dx, dy);
     if (d < RAD * 2 && d > 1e-6) {
       const p = (RAD * 2 - d) / 2; dx /= d; dy /= d;
       a.x -= dx * p; a.y -= dy * p; b.x += dx * p; b.y += dy * p;
-      collide(a, false); collide(b, false);
+      collideW(a, false); collideW(b, false);
     }
   }
 }
 function findTarget(c) {
-  const cx = Math.floor(c.x), cy = Math.floor(c.y);
-  const px = c.x + c.fx * 0.62, py = c.y + c.fy * 0.62;
+  if (c.down) return null;
+  // in the frame of the island the chef stands on
+  const r = chefRes(c), ccx = c.x - r.x, ccy = c.y - r.y;
+  const cx = Math.floor(ccx), cy = Math.floor(ccy);
+  const px = ccx + c.fx * 0.62, py = ccy + c.fy * 0.62;
   let best = null, bs = 1e9;
   for (let y = cy - 1; y <= cy + 1; y++) for (let x = cx - 1; x <= cx + 1; x++) {
     const t = tileAt(x, y);
-    if (!t || isWalk(t.t) || t.t === TILE.WALL) continue;
-    const dx = x + 0.5 - c.x, dy = y + 0.5 - c.y;
+    if (!t || isWalk(t.t) || t.t === TILE.WALL || t.t === TILE.SKY) continue;
+    const dx = x + 0.5 - ccx, dy = y + 0.5 - ccy;
     if (dx * c.fx + dy * c.fy < 0.25) continue;
     const qx = clamp(px, x, x + 1), qy = clamp(py, y, y + 1);
     const d = Math.hypot(px - qx, py - qy);
@@ -2133,7 +2296,7 @@ function findTarget(c) {
     const s = d * 10 + Math.hypot(px - x - 0.5, py - y - 0.5);
     if (s < bs) { bs = s; best = t; }
   }
-  return best;
+  return best || floorTarget({ x: ccx, y: ccy }, px, py);
 }
 
 // ---------------- interactions ----------------
@@ -2281,6 +2444,8 @@ function doGrab(c) {
       return;
     }
     case TILE.COUNTER: case TILE.BOARD: case TILE.BELT: slotInteract(c, t); return;
+    // something lying on the floor (a throw that missed)
+    case TILE.FLOOR: case TILE.ICE: case TILE.PORTAL: case TILE.WALKWAY: if (t.item) slotInteract(c, t); return;
     case TILE.STOVE: {
       if (!t.item) {
         if (isCw(h)) { t.item = h; c.hold = null; t.bump = 1; Sound.sfx.place(); }
@@ -2370,6 +2535,7 @@ function plateMatches(p, r) {
 function doAction(c) {
   const h = c.hold, t = c.target;
   if (h && h.k === 'ext') return;
+  if (canThrow(c)) { throwItem(c); return; }
   if (!t) return;
   if (t.fire) { say(c, '消火器で消そう！'); return; }
   if (t.t === TILE.BOARD) {
@@ -2607,6 +2773,7 @@ function ambient(dt) {
       addPart({ x: t.x + 0.5 + rnd(-0.1, 0.1), y: t.y - 0.05, vx: rnd(-0.15, 0.15), vy: -0.5, life: 1.1, max: 1.1, r: 0.06, grow: 0.16, col: 'rgba(70,64,64,.55)' });
   }
   for (const c of G.chefs) if (c.sayT > 0) c.sayT -= dt;
+  updateDrops(dt);
   for (let i = G.parts.length - 1; i >= 0; i--) {
     const p = G.parts[i];
     p.life -= dt;
@@ -2667,13 +2834,18 @@ function gameUpdate(dt) {
   if (G.goT > 0) G.goT -= dt;
   // online, chef 1 belongs to the joined phone: it moves there, and its presses arrive by net
   const remote = c => G.online && c.id === 1;
+  // moving islands go first and take along the chefs standing on them
+  updateIslands(dt, G.chefs.filter(c => !remote(c)));
   for (const c of G.chefs) {
     if (remote(c)) { remoteMove(c, dt); continue; }
+    if (c.down > 0) { c.inp = NO_INPUT; readInput(c.id); downTick(c, dt); continue; }
     c.inp = readInput(c.id); moveChef(c, c.inp.mx, c.inp.my, dt);
+    afterMove(c);
   }
   chefPush();
   for (const c of G.chefs) {
     if (remote(c)) { remoteAct(c, dt); continue; }
+    if (c.down > 0) { c.target = null; c.work = null; c.spraying = false; continue; }
     c.target = findTarget(c);
     if (c.inp.grab) doGrab(c);
     if (c.inp.act) doAction(c);
@@ -2687,7 +2859,10 @@ function gameUpdate(dt) {
   updateOrders(dt);
   updateReturns(dt);
   updateBelts(dt);
+  updateFly(dt);
+  updateRespawn(dt);
   updateDark();
+  if (G.stage.throw && !G.tipsShown.throw && G.chefs.some(c => !remote(c) && c.hold && c.hold.k === 'ing')) tip('throw', 5);
   ambient(dt);
   if (G.time <= 30 && !G.hurry) { G.hurry = true; Sound.bgm.tempo(1.18); }
   if (G.time <= 10) { const s = Math.ceil(G.time); if (s !== G.tickS && s > 0) { G.tickS = s; Sound.sfx.tick(); } }
@@ -2740,6 +2915,320 @@ function demoUpdate(dt) {
     }
   }
   ambient(dt);
+}
+
+// ===== sky kitchens: moving islands, falling off, throwing, portals, walkways =====
+const ZERO = Object.freeze({ x: 0, y: 0 });
+
+// ---------- moving islands ----------
+// An island is a block of tiles that travels between offsets on the stage clock. Its tiles keep
+// whole-tile places in the grid (they hop one tile at a time, half way through each step); what
+// is drawn, and the chefs riding it, follow the smooth offset. Both phones compute the same
+// motion from the clock, so nothing about it is sent.
+function mkIsland(tiles, d, id) {
+  const cells = [];
+  for (let y = d.rect[1]; y <= d.rect[3]; y++) for (let x = d.rect[0]; x <= d.rect[2]; x++) {
+    const t = tiles[y][x];
+    if (t.t === TILE.SKY) continue;
+    t.isl = id; cells.push(t);
+  }
+  const segs = [];
+  let t0 = 0;
+  const w = d.way, n = w.length;
+  for (let i = 0; i < n; i++) {
+    const a = w[i], b = w[(i + 1) % n];
+    segs.push({ t0, dur: a[2], from: a, to: a, mv: false }); t0 += a[2];
+    const dist = Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]);
+    if (dist) { const dur = dist / (d.speed || 1.5); segs.push({ t0, dur, from: a, to: b, mv: true }); t0 += dur; }
+  }
+  return { id, d, cells, segs, T: t0, O: [0, 0], L: [0, 0], warn: 0, moving: false, wasWarn: false };
+}
+// where an island is at stage time `el`; warn rises 0..1 over the last 1.6 s before it sets off
+function islPose(I, el) {
+  const tt = ((el + (I.d.phase || 0)) % I.T + I.T) % I.T;
+  for (const s of I.segs) {
+    if (tt >= s.t0 + s.dur) continue;
+    if (!s.mv) {
+      const left = s.t0 + s.dur - tt;
+      return { x: s.from[0], y: s.from[1], warn: el > 0 && left < 1.6 ? 1 - left / 1.6 : 0, moving: false };
+    }
+    const p = (tt - s.t0) / s.dur, e = p * p * (3 - 2 * p);
+    return { x: s.from[0] + (s.to[0] - s.from[0]) * e, y: s.from[1] + (s.to[1] - s.from[1]) * e, warn: 0, moving: true };
+  }
+  const s = I.segs[0];
+  return { x: s.from[0], y: s.from[1], warn: 0, moving: false };
+}
+// the clock the islands run on: the stage time, smoothed on a joined phone (its copy of the
+// time jumps a little with every update from the host)
+function islClock(dt) {
+  const live = G.state === 'playing' || G.state === 'paused' || G.state === 'timeup';
+  const target = live ? G.stage.time - G.time : 0;
+  if (!G.netGuest) return (G.ic = target);
+  if (!live) return (G.ic = 0);
+  if (G.state === 'playing' && !G.netStale) G.ic += dt;
+  const err = target - G.ic;
+  if (Math.abs(err) > 0.5) G.ic = target;
+  else G.ic += clamp(err, -dt * 0.5, dt * 0.5);
+  return G.ic;
+}
+// move the islands; `carry` = the chefs this device drives, who ride along when standing on one
+function updateIslands(dt, carry) {
+  if (!G.isl.length) return;
+  const el = islClock(dt);
+  for (const I of G.isl) {
+    const o = islPose(I, el);
+    const dx = o.x - I.O[0], dy = o.y - I.O[1];
+    if (dx || dy) for (const c of carry) if (c.ride === I.id && !c.down) { c.x += dx; c.y += dy; }
+    I.O[0] = o.x; I.O[1] = o.y; I.warn = o.warn;
+    if (o.warn > 0 && !I.wasWarn && G.state === 'playing' && !G.netGuest) { Sound.sfx.rumble(); tip('island', 4.5); }
+    I.wasWarn = o.warn > 0;
+    I.moving = o.moving;
+    const Lx = Math.round(o.x), Ly = Math.round(o.y);
+    let guard = 0;
+    while ((I.L[0] !== Lx || I.L[1] !== Ly) && guard++ < 40) {
+      const sx = Math.sign(Lx - I.L[0]), sy = sx ? 0 : Math.sign(Ly - I.L[1]);
+      islStep(I, sx, sy);
+    }
+  }
+}
+// one whole-tile hop: the island's tiles take their new cells, the sky they cover fills the cells left behind
+function islStep(I, sx, sy) {
+  const cells = I.cells;
+  const from = new Set(cells.map(t => t.x + ',' + t.y));
+  const entering = [], leaving = [];
+  for (const t of cells) {
+    if (!from.has((t.x + sx) + ',' + (t.y + sy))) entering.push(tileAt(t.x + sx, t.y + sy));
+    if (!from.has((t.x - sx) + ',' + (t.y - sy))) leaving.push([t.x, t.y]);
+  }
+  if (entering.some(s => !s || s.t !== TILE.SKY) || entering.length !== leaving.length) { I.L[0] += sx; I.L[1] += sy; return; }
+  for (const t of cells) { t.x += sx; t.y += sy; }
+  for (const t of cells) G.tiles[t.y][t.x] = t;
+  entering.forEach((s, i) => { const [x, y] = leaving[i]; s.x = x; s.y = y; G.tiles[y][x] = s; });
+  I.L[0] += sx; I.L[1] += sy;
+}
+// how far a tile is drawn from its grid cell (an island between two cells, or shaking before it sets off)
+function tileRes(t) {
+  if (!t.isl) return ZERO;
+  const I = G.isl[t.isl - 1];
+  if (!I) return ZERO;
+  let x = I.O[0] - I.L[0], y = I.O[1] - I.L[1];
+  if (I.warn > 0) { const a = 0.035 * I.warn; x += Math.sin(G.t * 47 + I.id) * a; y += Math.cos(G.t * 39 + I.id * 2) * a * 0.5; }
+  return { x, y };
+}
+// the offset between where a riding chef is and where its island's tiles are in the grid
+function chefRes(c) {
+  if (!c.ride) return ZERO;
+  const I = G.isl[c.ride - 1];
+  return I ? { x: I.O[0] - I.L[0], y: I.O[1] - I.L[1] } : ZERO;
+}
+function rideOf(c) {
+  const r = chefRes(c);
+  const t = tileAt(Math.floor(c.x - r.x), Math.floor(c.y - r.y));
+  return t && t.isl ? t.isl : 0;
+}
+// collide in the frame of the island the chef stands on
+function collideW(c, ice) {
+  const r = chefRes(c);
+  c.x -= r.x; c.y -= r.y;
+  collide(c, ice);
+  c.x += r.x; c.y += r.y;
+}
+
+// ---------- after a chef moved: portals, which island it is on, falling ----------
+function afterMove(c) {
+  checkWarp(c);
+  c.ride = rideOf(c);
+  checkFall(c);
+}
+function checkWarp(c) {
+  const t = tileAt(Math.floor(c.x), Math.floor(c.y));
+  if (c.warpLock && t !== c.warpLock) c.warpLock = null;
+  if (!t || t.t !== TILE.PORTAL || !t.pair || c.warpLock) return;
+  const d = t.pair;
+  c.x += d.x - t.x; c.y += d.y - t.y;
+  c.warpLock = d; c.work = null;
+  warpFx(t, d);
+}
+function warpFx(a, b) {
+  Sound.sfx.warp();
+  for (const t of [a, b]) {
+    for (let i = 0; i < 10; i++) {
+      const ang = rnd(0, TAU), s = rnd(0.8, 2.2);
+      addPart({ x: t.x + 0.5, y: t.y + 0.4, vx: Math.cos(ang) * s, vy: Math.sin(ang) * s - 0.6, drag: 2, life: rnd(0.4, 0.7), max: 0.7, r: rnd(0.04, 0.08), col: i % 2 ? '#C9A8FF' : '#FFFFFF', kind: 'star' });
+    }
+  }
+}
+function checkFall(c) {
+  if (c.down || !G.sky) return;
+  const r = chefRes(c);
+  const t = tileAt(Math.floor(c.x - r.x), Math.floor(c.y - r.y));
+  if (t && t.t !== TILE.SKY) return;
+  chefFall(c);
+}
+function chefFall(c) {
+  c.down = DOWN_TIME; c.falls++;
+  c.fallX = c.x; c.fallY = c.y;
+  c.vx = 0; c.vy = 0; c.work = null; c.spraying = false; c.target = null; c.ride = 0;
+  // the host decides what happens to what the chef held (a joined phone hears it back)
+  if (!G.netGuest) { if (c.hold) loseItem(c.hold, c.x, c.y); c.hold = null; }
+  Sound.sfx.fall();
+  tip('fall', 4.5);
+}
+// a fallen chef waits, then is back at its start
+function downTick(c, dt) {
+  c.vx = 0; c.vy = 0; c.target = null; c.spraying = false;
+  c.down = Math.max(0, c.down - dt);
+  if (c.down > 0) return;
+  const h = c.home, p = homePos(c);
+  c.x = p.x; c.y = p.y; c.fx = 0; c.fy = 1; c.ride = h && h.isl ? h.isl : 0; c.warpLock = null;
+  for (let i = 0; i < 10; i++) { const a = i / 10 * TAU; addPart({ x: c.x + Math.cos(a) * 0.2, y: c.y - 0.3 + Math.sin(a) * 0.12, vx: Math.cos(a) * 1.4, vy: Math.sin(a) * 0.7 - 0.5, drag: 3, life: 0.5, max: 0.5, r: 0.07, grow: 0.15, col: 'rgba(255,255,255,.9)' }); }
+  Sound.sfx.pop();
+}
+function homePos(c) {
+  const h = c.home;
+  if (!h) return { x: G.cols / 2, y: G.rows / 2 };
+  const r = tileRes(h);
+  return { x: h.x + 0.5 + r.x, y: h.y + 0.5 + r.y };
+}
+
+// ---------- what falls off the kitchen comes back (host only) ----------
+function loseItem(it, x, y) {
+  if (!it) return;
+  addDrop(it, x, y);
+  if (it.k === 'plate') G.returns.push({ t: G.stage.dirty ? 8 : 6 });
+  else if (it.k === 'dirty') for (let i = 0; i < it.n; i++) G.returns.push({ t: 6 + i * 0.5 });
+  else if (isCw(it)) { cwReset(it); G.respawn.push({ it, t: 4 }); }
+  else if (it.k === 'ext') G.respawn.push({ it, t: 4 });
+}
+function addDrop(it, x, y) {
+  if (G.replay) return;
+  G.drops.push({ it, x, y, t: 0 });
+  if (G.drops.length > 12) G.drops.shift();
+  pushEv(['d', Math.round(x * 100), Math.round(y * 100), encItem(it)]);
+}
+function updateRespawn(dt) {
+  for (let i = G.respawn.length - 1; i >= 0; i--) {
+    const r = G.respawn[i];
+    r.t -= dt;
+    if (r.t > 0) continue;
+    const free = t => t && !t.item && !t.fire;
+    let spot = null;
+    if (isCw(r.it)) spot = free(r.it.home) ? r.it.home : G.list.find(t => t.t === TILE.STOVE && free(t)) || G.list.find(t => t.t === TILE.COUNTER && free(t));
+    else spot = free(r.it.home) ? r.it.home : G.list.find(t => t.t === TILE.COUNTER && free(t));
+    if (!spot) { r.t = 1; continue; }
+    spot.item = r.it; spot.bump = 1;
+    G.respawn.splice(i, 1);
+    puff(spot.x + 0.5, spot.y + 0.1, 'rgba(255,255,255,.85)', 6, 0.2, 0.6);
+    Sound.sfx.back();
+  }
+}
+
+// ---------- throwing ----------
+function canThrow(c) { return !!G.stage.throw && !!c.hold && c.hold.k === 'ing'; }
+function throwItem(c) {
+  const it = c.hold;
+  c.hold = null; c.work = null;
+  const m = Math.hypot(c.fx, c.fy) || 1;
+  const p = { it, x: c.x + c.fx / m * 0.3, y: c.y + c.fy / m * 0.3, dx: c.fx / m, dy: c.fy / m, d: 0, from: c.id, id: '', lock: null };
+  Sound.sfx.throw();
+  if (G.netGuest) {
+    // a joined phone only shows it; the host throws it for real
+    if (!G.replay) { p.id = 'g' + Net.aseq; p.n = Net.aseq; G.pfly.push(p); }
+    return;
+  }
+  p.id = c.id === 1 && G.online ? 'g' + (Net.lastA - Net.pendA) : 'h' + (++G.flyN);
+  G.fly.push(p);
+}
+// a chef with free hands who faces the flying item takes it out of the air
+function catcher(p, x, y) {
+  for (const c of G.chefs) {
+    if (c.hold || c.down || (c.id === p.from && p.d < 1.2)) continue;
+    if (Math.hypot(c.x - x, c.y - y) > 0.5) continue;
+    if (c.fx * p.dx + c.fy * p.dy > -0.2) continue;
+    return c;
+  }
+  return null;
+}
+// the host's flight: in small steps, so a counter is never skipped
+function updateFly(dt) {
+  for (let i = G.fly.length - 1; i >= 0; i--) {
+    const p = G.fly[i];
+    const step = THROW_SPEED * dt, n = Math.max(1, Math.ceil(step / 0.15));
+    let done = false;
+    for (let k = 0; k < n && !done; k++) {
+      const nx = p.x + p.dx * step / n, ny = p.y + p.dy * step / n;
+      const c = catcher(p, nx, ny);
+      if (c) { c.hold = p.it; Sound.sfx.pick(); say(c, 'キャッチ！'); done = true; break; }
+      const t = tileAt(Math.floor(nx), Math.floor(ny));
+      if (!t || (!isWalk(t.t) && t.t !== TILE.SKY)) { landOn(p, t); done = true; break; }
+      p.x = nx; p.y = ny; p.d += step / n;
+      if (p.lock && t !== p.lock) p.lock = null;
+      if (t.t === TILE.PORTAL && t.pair && !p.lock) { p.x += t.pair.x - t.x; p.y += t.pair.y - t.y; p.lock = t.pair; warpFx(t, t.pair); }
+      if (p.d >= THROW_RANGE) { dropToFloor(p.it, p.x, p.y); done = true; }
+    }
+    if (done) G.fly.splice(i, 1);
+  }
+}
+// the first counter in the way takes it -- onto a free top, into a pot or onto a plate that can use it
+function landOn(p, t) {
+  const it = p.it;
+  if (t && !t.fire) {
+    const top = t.t === TILE.COUNTER || t.t === TILE.BOARD || t.t === TILE.BELT || t.t === TILE.CRATE;
+    if (top && !t.item) {
+      t.item = it; t.bump = 1; t.bp = t.t === TILE.BELT ? 0.5 : 0; Sound.sfx.place();
+      if (t.t === TILE.BOARD) hintEvent('onBoard');
+      return;
+    }
+    if (t.item && t.item.k === 'plate' && plateAdd(t.item, it)) { t.bump = 1; Sound.sfx.plate(); return; }
+    if (t.item && isCw(t.item) && cwAdd(t.item, it)) { t.bump = 1; cwSound(t.item); afterCwAdd(t.item); return; }
+    if (t.t === TILE.TRASH) { trashFx(t); return; }
+  }
+  // it bounces off and drops where it was
+  Sound.sfx.place();
+  dropToFloor(it, p.x - p.dx * 0.25, p.y - p.dy * 0.25);
+}
+// onto a free bit of floor nearby, or into the sky
+function dropToFloor(it, x, y) {
+  const cx = Math.floor(x), cy = Math.floor(y), here = tileAt(cx, cy);
+  if (here && here.t === TILE.SKY) { loseItem(it, x, y); return; }
+  let best = null, bd = 9;
+  for (let yy = cy - 1; yy <= cy + 1; yy++) for (let xx = cx - 1; xx <= cx + 1; xx++) {
+    const t = tileAt(xx, yy);
+    if (!t || !isWalk(t.t) || t.item) continue;
+    const d = Math.hypot(xx + 0.5 - x, yy + 0.5 - y);
+    if (d < bd) { bd = d; best = t; }
+  }
+  if (!best) { loseItem(it, x, y); return; }
+  best.item = it; best.bump = 1;
+}
+// a joined phone draws the flights it hears about (and its own throws) without deciding where they land
+function flyVisual(list, dt) {
+  for (let i = list.length - 1; i >= 0; i--) {
+    const p = list[i];
+    if (p.stop) { p.stopT = (p.stopT || 0) + dt; if (p.stopT > 0.4) list.splice(i, 1); continue; }
+    const step = THROW_SPEED * dt, n = Math.max(1, Math.ceil(step / 0.15));
+    for (let k = 0; k < n; k++) {
+      const nx = p.x + p.dx * step / n, ny = p.y + p.dy * step / n;
+      const t = tileAt(Math.floor(nx), Math.floor(ny));
+      if (!t || (!isWalk(t.t) && t.t !== TILE.SKY) || p.d >= THROW_RANGE) { p.stop = true; break; }
+      p.x = nx; p.y = ny; p.d += step / n;
+      if (p.lock && t !== p.lock) p.lock = null;
+      if (t.t === TILE.PORTAL && t.pair && !p.lock) { p.x += t.pair.x - t.x; p.y += t.pair.y - t.y; p.lock = t.pair; }
+    }
+  }
+}
+function updateDrops(dt) {
+  for (let i = G.drops.length - 1; i >= 0; i--) { G.drops[i].t += dt; if (G.drops[i].t > 0.9) G.drops.splice(i, 1); }
+}
+
+// ---------- things on the floor (a throw that missed) ----------
+// picked up by facing them, or standing on them
+function floorTarget(c, px, py) {
+  const front = tileAt(Math.floor(px), Math.floor(py));
+  if (front && isWalk(front.t) && front.item) return front;
+  const own = tileAt(Math.floor(c.x), Math.floor(c.y));
+  if (own && isWalk(own.t) && own.item) return own;
+  return null;
 }
 
 // ===== render: layout, kitchen, HUD =====
@@ -2885,6 +3374,7 @@ function render() {
   ctx.setTransform(L.dpr, 0, 0, L.dpr, 0, 0);
   ctx.clearRect(0, 0, L.W, L.H);
   if (!G) return;
+  if (G.sky) drawSky();
   drawKitchen();
   if (G.state !== 'demo') drawHUD();
 }
@@ -2905,31 +3395,51 @@ const BLOCK = {
 
 // The floor never changes during a stage, so it is painted once per layout into its own canvas.
 const _floor = { key: '', cv: null };
+// one floor tile (also used for the islands, which are drawn every frame)
+function floorTile(c, t, X, Y, ts) {
+  if (t.t === TILE.ICE) {
+    c.fillStyle = (t.x + t.y) % 2 ? '#CFEFFC' : '#BDE5F7'; c.fillRect(X, Y, ts, ts);
+    c.strokeStyle = 'rgba(255,255,255,.75)'; c.lineWidth = Math.max(1, ts * 0.04);
+    c.beginPath(); c.moveTo(X + ts * 0.2, Y + ts * 0.72); c.lineTo(X + ts * 0.42, Y + ts * 0.3);
+    c.moveTo(X + ts * 0.36, Y + ts * 0.78); c.lineTo(X + ts * 0.5, Y + ts * 0.52); c.stroke();
+  } else if (t.t === TILE.WALKWAY) {
+    c.fillStyle = '#9AA6B4'; c.fillRect(X, Y, ts, ts);
+    c.fillStyle = '#6F7B8A'; c.fillRect(X + ts * 0.06, Y + ts * 0.06, ts * 0.88, ts * 0.88);
+  } else if (t.isl) {
+    // the floor that moves is wooden, so it reads as a separate part of the kitchen
+    c.fillStyle = (t.x + t.y) % 2 ? '#E2B57E' : '#D8A86E'; c.fillRect(X, Y, ts, ts);
+    c.strokeStyle = 'rgba(120,72,30,.35)'; c.lineWidth = Math.max(1, ts * 0.03);
+    c.beginPath(); for (const k of [0.33, 0.66]) { c.moveTo(X, Y + ts * k); c.lineTo(X + ts, Y + ts * k); } c.stroke();
+    c.fillStyle = 'rgba(120,72,30,.45)';
+    for (const [kx, ky] of [[0.12, 0.17], [0.88, 0.5], [0.12, 0.83]]) { c.beginPath(); c.arc(X + ts * kx, Y + ts * ky, Math.max(1, ts * 0.025), 0, TAU); c.fill(); }
+  } else if (t.t === TILE.PORTAL) {
+    c.fillStyle = (t.x + t.y) % 2 ? '#EFE1C6' : '#E4D1B0'; c.fillRect(X, Y, ts, ts);
+  } else {
+    c.fillStyle = (t.x + t.y) % 2 ? '#EFE1C6' : '#E4D1B0'; c.fillRect(X, Y, ts, ts);
+  }
+  if (G.sky) { c.strokeStyle = 'rgba(140,105,60,.18)'; c.lineWidth = 1; c.strokeRect(X + 0.5, Y + 0.5, ts - 1, ts - 1); }
+}
 function paintFloor(c) {
   const ts = L.ts, ox = L.ox, oy = L.oy;
-  const fx = ox - ts * 0.16, fy = oy - ts * (BH + 0.16), fw = L.kw + ts * 0.32, fh = L.kh + ts * (BH + 0.32);
-  c.fillStyle = 'rgba(10,25,20,.25)'; rrect(c, fx + 3, fy + 9, fw, fh, ts * 0.24); c.fill();
-  c.fillStyle = '#2E3A37'; rrect(c, fx, fy, fw, fh, ts * 0.24); c.fill();
-  for (const t of G.list) {
-    if (!isWalk(t.t)) continue;
-    const X = ox + t.x * ts, Y = oy + t.y * ts;
-    if (t.t === TILE.ICE) {
-      c.fillStyle = (t.x + t.y) % 2 ? '#CFEFFC' : '#BDE5F7'; c.fillRect(X, Y, ts, ts);
-      c.strokeStyle = 'rgba(255,255,255,.75)'; c.lineWidth = Math.max(1, ts * 0.04);
-      c.beginPath(); c.moveTo(X + ts * 0.2, Y + ts * 0.72); c.lineTo(X + ts * 0.42, Y + ts * 0.3);
-      c.moveTo(X + ts * 0.36, Y + ts * 0.78); c.lineTo(X + ts * 0.5, Y + ts * 0.52); c.stroke();
-    } else {
-      c.fillStyle = (t.x + t.y) % 2 ? '#EFE1C6' : '#E4D1B0'; c.fillRect(X, Y, ts, ts);
-    }
+  if (!G.sky) {
+    const fx = ox - ts * 0.16, fy = oy - ts * (BH + 0.16), fw = L.kw + ts * 0.32, fh = L.kh + ts * (BH + 0.32);
+    c.fillStyle = 'rgba(10,25,20,.25)'; rrect(c, fx + 3, fy + 9, fw, fh, ts * 0.24); c.fill();
+    c.fillStyle = '#2E3A37'; rrect(c, fx, fy, fw, fh, ts * 0.24); c.fill();
   }
-  c.strokeStyle = 'rgba(140,105,60,.16)'; c.lineWidth = 1;
-  c.beginPath();
-  for (let x = 1; x < G.cols; x++) { c.moveTo(ox + x * ts + 0.5, oy); c.lineTo(ox + x * ts + 0.5, oy + L.kh); }
-  for (let y = 1; y < G.rows; y++) { c.moveTo(ox, oy + y * ts + 0.5); c.lineTo(ox + L.kw, oy + y * ts + 0.5); }
-  c.stroke();
+  for (const t of G.list) {
+    if (!isWalk(t.t) || t.isl) continue;
+    floorTile(c, t, ox + t.x * ts, oy + t.y * ts, ts);
+  }
+  if (!G.sky) {
+    c.strokeStyle = 'rgba(140,105,60,.16)'; c.lineWidth = 1;
+    c.beginPath();
+    for (let x = 1; x < G.cols; x++) { c.moveTo(ox + x * ts + 0.5, oy); c.lineTo(ox + x * ts + 0.5, oy + L.kh); }
+    for (let y = 1; y < G.rows; y++) { c.moveTo(ox, oy + y * ts + 0.5); c.lineTo(ox + L.kw, oy + y * ts + 0.5); }
+    c.stroke();
+  }
   // contact shadows under counters
   for (const t of G.list) {
-    if (!isWalk(t.t)) continue;
+    if (!isWalk(t.t) || t.isl) continue;
     const up = tileAt(t.x, t.y - 1);
     if (up && !isWalk(up.t)) {
       const X = ox + t.x * ts, Y = oy + t.y * ts;
@@ -2937,6 +3447,116 @@ function paintFloor(c) {
       g.addColorStop(0, 'rgba(40,25,10,.28)'); g.addColorStop(1, 'rgba(40,25,10,0)');
       c.fillStyle = g; c.fillRect(X, Y, ts, ts * 0.22);
     }
+  }
+}
+// ---------- the sky, and the kitchen floating in it ----------
+const CLOUDS = [[0.08, 0.18, 1.2, 0.18], [0.42, 0.08, 0.8, 0.12], [0.7, 0.3, 1.5, 0.22], [0.25, 0.62, 1.0, 0.15], [0.86, 0.72, 1.3, 0.2], [0.55, 0.9, 0.9, 0.16]];
+function drawSky() {
+  const g = ctx.createLinearGradient(0, 0, 0, L.H);
+  g.addColorStop(0, '#6EC1EE'); g.addColorStop(0.65, '#BFE6FA'); g.addColorStop(1, '#E6F6FF');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, L.W, L.H);
+  const u = Math.max(L.ts, 26);
+  for (const [fx, fy, sc, sp] of CLOUDS) {
+    const w = u * 3.2 * sc, span = L.W + w * 2;
+    const x = ((fx * span - G.t * sp * u) % span + span) % span - w, y = fy * L.H;
+    ctx.fillStyle = 'rgba(255,255,255,.75)';
+    for (const [dx, dy, r] of [[0, 0, 0.5], [0.42, -0.18, 0.42], [0.85, 0.02, 0.4], [-0.38, 0.06, 0.34], [0.4, 0.16, 0.46]]) {
+      ctx.beginPath(); ctx.ellipse(x + dx * w * 0.5, y + dy * w * 0.4, r * w * 0.42, r * w * 0.3, 0, 0, TAU); ctx.fill();
+    }
+  }
+}
+// the thickness under each edge of the platform, then a rim along the edges that face the sky
+function drawUndersides() {
+  const ts = L.ts, deep = ts * 0.34;
+  const isSky = (x, y) => { const t = tileAt(x, y); return !t || t.t === TILE.SKY; };
+  for (const t of G.list) {
+    if (t.t === TILE.SKY || !isSky(t.x, t.y + 1)) continue;
+    const r = tileRes(t), X = L.ox + (t.x + r.x) * ts, Y = L.oy + (t.y + 1 + r.y) * ts;
+    const g = ctx.createLinearGradient(0, Y, 0, Y + deep);
+    g.addColorStop(0, '#A9764A'); g.addColorStop(1, '#6B4527');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.moveTo(X, Y); ctx.lineTo(X + ts, Y);
+    ctx.lineTo(X + ts - (isSky(t.x + 1, t.y) ? ts * 0.12 : 0), Y + deep);
+    ctx.lineTo(X + (isSky(t.x - 1, t.y) ? ts * 0.12 : 0), Y + deep); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,.12)'; ctx.fillRect(X + ts * 0.48, Y, Math.max(1, ts * 0.04), deep * 0.9);
+  }
+}
+function drawSkyEdges() {
+  const ts = L.ts, w = Math.max(1.5, ts * 0.05);
+  ctx.fillStyle = 'rgba(74,48,26,.55)';
+  for (const t of G.list) {
+    if (!isWalk(t.t)) continue;
+    const r = tileRes(t), X = L.ox + (t.x + r.x) * ts, Y = L.oy + (t.y + r.y) * ts;
+    const sky = (dx, dy) => { const n = tileAt(t.x + dx, t.y + dy); return !n || n.t === TILE.SKY; };
+    if (sky(-1, 0)) ctx.fillRect(X, Y, w, ts);
+    if (sky(1, 0)) ctx.fillRect(X + ts - w, Y, w, ts);
+    if (sky(0, -1)) ctx.fillRect(X, Y, ts, w);
+  }
+}
+// island floors move, so they are drawn every frame
+function drawIslandFloors() {
+  const ts = L.ts;
+  for (const I of G.isl) for (const t of I.cells) {
+    if (!isWalk(t.t)) continue;
+    const r = tileRes(t);
+    floorTile(ctx, t, L.ox + (t.x + r.x) * ts, L.oy + (t.y + r.y) * ts, ts);
+  }
+}
+// portals swirl and walkways run
+function drawFloorFx() {
+  const ts = L.ts;
+  for (const t of G.list) {
+    if (t.t !== TILE.PORTAL && t.t !== TILE.WALKWAY) continue;
+    const r = tileRes(t), X = L.ox + (t.x + r.x) * ts, Y = L.oy + (t.y + r.y) * ts;
+    ctx.save(); ctx.translate(X + ts / 2, Y + ts / 2); ctx.scale(ts, ts);
+    if (t.t === TILE.PORTAL) {
+      const col = t.pkey === 'O' ? ['#7B4BD6', '#C9A8FF'] : ['#1E9A8A', '#8FE8D8'];
+      ell(ctx, 0, 0, 0.44, 0.4); fill(ctx, col[0]);
+      ell(ctx, 0, 0, 0.36, 0.32); fill(ctx, 'rgba(20,10,40,.55)');
+      ctx.save(); ctx.rotate(G.t * 2.2 * (t.pkey === 'O' ? 1 : -1));
+      for (let k = 0; k < 3; k++) {
+        ctx.rotate(TAU / 3);
+        ctx.beginPath(); ctx.arc(0.06, 0, 0.22, -0.4, 1.4); strk(ctx, col[1], 0.05);
+      }
+      ctx.restore();
+      circ(ctx, 0, 0, 0.07 + 0.02 * Math.sin(G.t * 6)); fill(ctx, '#FFFFFF');
+    } else {
+      ctx.rotate(Math.atan2(t.dir[1], t.dir[0]));
+      ctx.beginPath(); ctx.rect(-0.44, -0.44, 0.88, 0.88); ctx.clip();
+      const ph = (G.t * WALK_SPEED * 0.9) % 0.5;
+      ctx.beginPath();
+      for (let k = -2; k <= 2; k++) { const x = k * 0.5 + ph; ctx.moveTo(x - 0.12, -0.24); ctx.lineTo(x + 0.08, 0); ctx.lineTo(x - 0.12, 0.24); }
+      strk(ctx, '#F4B42C', 0.08);
+    }
+    ctx.restore();
+  }
+}
+// something lying on the floor (a throw that missed): drawn flat, ringed when a chef faces it
+function drawFloorItem(t, tid) {
+  const ts = L.ts, r = tileRes(t);
+  const cx = L.ox + (t.x + 0.5 + r.x) * ts, cy = L.oy + (t.y + 0.55 + r.y) * ts;
+  ctx.fillStyle = 'rgba(40,28,16,.22)'; ctx.beginPath(); ctx.ellipse(cx, cy + ts * 0.18, ts * 0.3, ts * 0.1, 0, 0, TAU); ctx.fill();
+  if (tid !== undefined) { ctx.lineWidth = Math.max(2.5, ts * 0.06); ctx.strokeStyle = CHEF_COL[tid]; ctx.beginPath(); ctx.ellipse(cx, cy + ts * 0.1, ts * 0.4, ts * 0.2, 0, 0, TAU); ctx.stroke(); }
+  ctx.save(); ctx.translate(cx, cy); ctx.scale(ts * 0.8, ts * 0.8); drawItemArt(ctx, t.item); ctx.restore();
+}
+// things in the air: thrown ingredients, with their shadow on the ground
+function drawFlying() {
+  const ts = L.ts;
+  for (const list of [G.fly, G.pfly]) for (const p of list) {
+    const k = clamp(p.d / THROW_RANGE, 0, 1), z = 0.45 + Math.sin(k * Math.PI) * 0.45;
+    const x = L.ox + p.x * ts, y = L.oy + p.y * ts;
+    ctx.fillStyle = 'rgba(30,20,10,.22)'; ctx.beginPath(); ctx.ellipse(x, y, ts * 0.18, ts * 0.07, 0, 0, TAU); ctx.fill();
+    ctx.save(); ctx.translate(x, y - z * ts); ctx.rotate(p.d * 4 * (p.dx >= 0 ? 1 : -1)); ctx.scale(ts * 0.7, ts * 0.7); drawItemArt(ctx, p.it); ctx.restore();
+  }
+}
+// things falling off the kitchen shrink away into the sky
+function drawDrops() {
+  const ts = L.ts;
+  for (const d of G.drops) {
+    const k = clamp(d.t / 0.9, 0, 1);
+    ctx.save(); ctx.globalAlpha = 1 - k;
+    ctx.translate(L.ox + d.x * ts, L.oy + (d.y + k * k * 1.6) * ts); ctx.rotate(k * 3); ctx.scale(ts * 0.7 * (1 - k * 0.7), ts * 0.7 * (1 - k * 0.7));
+    drawItemArt(ctx, d.it); ctx.restore();
   }
 }
 function drawFloor() {
@@ -2954,14 +3574,19 @@ function drawFloor() {
 }
 
 function drawKitchen() {
+  if (G.sky) drawUndersides();
   drawFloor();
+  if (G.isl.length) drawIslandFloors();
+  if (G.sky) drawSkyEdges();
+  drawFloorFx();
   // targets
   const tg = new Map();
   if (G.state !== 'demo') for (const c of G.chefs) if (c.target && !tg.has(c.target)) tg.set(c.target, c.id);
   const chefs = G.chefs.slice().sort((a, b) => a.y - b.y);
   let ci = 0;
   for (let y = 0; y < G.rows; y++) {
-    for (let x = 0; x < G.cols; x++) { const t = G.tiles[y][x]; if (!isWalk(t.t)) drawBlock(t, tg.get(t)); }
+    for (let x = 0; x < G.cols; x++) { const t = G.tiles[y][x]; if (t.item && isWalk(t.t)) drawFloorItem(t, tg.get(t)); }
+    for (let x = 0; x < G.cols; x++) { const t = G.tiles[y][x]; if (!isWalk(t.t) && t.t !== TILE.SKY) drawBlock(t, tg.get(t)); }
     // belt items slide across tile edges, so they go on top of the row they slide into
     for (let x = 0; x < G.cols; x++) { const t = G.tiles[y][x]; if (t.t === TILE.BELT && t.item && t.dir[1] <= 0) drawBeltItem(t); }
     if (y > 0) for (let x = 0; x < G.cols; x++) { const t = G.tiles[y - 1][x]; if (t.t === TILE.BELT && t.item && t.dir[1] > 0) drawBeltItem(t); }
@@ -2970,6 +3595,8 @@ function drawKitchen() {
   }
   for (let x = 0; x < G.cols; x++) { const t = G.tiles[G.rows - 1][x]; if (t.t === TILE.BELT && t.item && t.dir[1] > 0) drawBeltItem(t); }
   while (ci < chefs.length) drawChef(chefs[ci++]);
+  drawFlying();
+  drawDrops();
   drawParticles();
   const dk = darkState();
   if (dk.lvl > 0.01) drawDarkness(dk.lvl);
@@ -3011,7 +3638,7 @@ function drawDarkness(lvl) {
 }
 
 function drawBlock(t, tid) {
-  const ts = L.ts, X = L.ox + t.x * ts, Y = L.oy + t.y * ts;
+  const ts = L.ts, R = tileRes(t), X = L.ox + (t.x + R.x) * ts, Y = L.oy + (t.y + R.y) * ts;
   const lift = t.bump > 0 ? Math.sin(t.bump * Math.PI) * ts * 0.06 : 0;
   const top = Y - BH * ts - lift, fh = BH * ts;
   const col = BLOCK[t.t] || BLOCK[TILE.COUNTER];
@@ -3115,15 +3742,15 @@ function decorate(t) {
 }
 
 function drawBeltItem(t) {
-  const ts = L.ts, off = clamp(t.bp, 0, 1) - 0.5;
+  const ts = L.ts, off = clamp(t.bp, 0, 1) - 0.5, R = tileRes(t);
   ctx.save();
-  ctx.translate(L.ox + (t.x + 0.5 + t.dir[0] * off) * ts, L.oy + (t.y + 0.5 - BH + t.dir[1] * off) * ts);
+  ctx.translate(L.ox + (t.x + R.x + 0.5 + t.dir[0] * off) * ts, L.oy + (t.y + R.y + 0.5 - BH + t.dir[1] * off) * ts);
   ctx.scale(ts * 0.92, ts * 0.92);
   drawItemArt(ctx, t.item);
   ctx.restore();
 }
 function drawFire(t) {
-  const ts = L.ts, cx = L.ox + (t.x + 0.5) * ts, by = L.oy + (t.y + 0.62 - BH) * ts;
+  const ts = L.ts, R = tileRes(t), cx = L.ox + (t.x + R.x + 0.5) * ts, by = L.oy + (t.y + R.y + 0.62 - BH) * ts;
   const f = t.fire, tt = G.t * 9 + t.x * 1.7 + t.y * 2.3;
   const g = ctx.createRadialGradient(cx, by - ts * 0.3, ts * 0.1, cx, by - ts * 0.3, ts * 0.95);
   g.addColorStop(0, 'rgba(255,140,40,.45)'); g.addColorStop(1, 'rgba(255,140,40,0)');
@@ -3143,9 +3770,33 @@ function drawFire(t) {
 
 function drawChef(c) {
   const ts = L.ts;
+  if (c.down > 0) { drawDownChef(c); return; }
   ctx.save();
   ctx.translate(L.ox + c.x * ts, L.oy + c.y * ts); ctx.scale(ts, ts);
   drawChefBody(ctx, c, G.t);
+  ctx.restore();
+}
+// a chef who stepped off the edge drops away, then a marker counts down at the start
+function drawDownChef(c) {
+  const ts = L.ts, e = DOWN_TIME - c.down;
+  if (e < FALL_ANIM) {
+    const k = e / FALL_ANIM;
+    ctx.save(); ctx.globalAlpha = 1 - k * 0.7;
+    ctx.translate(L.ox + c.x * ts, L.oy + (c.y + k * k * 1.8) * ts); ctx.rotate(k * 1.8 * (c.id ? -1 : 1));
+    const s = ts * (1 - k * 0.75); ctx.scale(s, s);
+    const hold = c.hold; c.hold = null;
+    drawChefBody(ctx, c, G.t);
+    c.hold = hold;
+    ctx.restore();
+    return;
+  }
+  const p = homePos(c), x = L.ox + p.x * ts, y = L.oy + (p.y - 0.45) * ts, r = Math.max(12, ts * 0.36);
+  ctx.save();
+  ctx.globalAlpha = 0.55 + 0.25 * Math.sin(G.t * 6);
+  ctx.fillStyle = CHEF_COL[c.id] || CHEF_COL[0]; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+  ctx.globalAlpha = 1; ctx.lineWidth = 2.5; ctx.strokeStyle = INK; ctx.stroke();
+  ctx.fillStyle = '#FFFFFF'; ctx.font = `800 ${Math.round(r * 1.1)}px ${FONT_UI}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(String(Math.max(1, Math.ceil(c.down))), x, y + 1);
   ctx.restore();
 }
 
@@ -3210,14 +3861,15 @@ function cwStatus(cw, x, y, onStove) {
 function drawStatus() {
   const ts = L.ts;
   for (const t of G.list) {
-    const cx = L.ox + (t.x + 0.5) * ts, topY = L.oy + (t.y - BH) * ts;
+    if (!t.item && !t.wash && !t.dirty) continue;
+    const R = tileRes(t), cx = L.ox + (t.x + R.x + 0.5) * ts, topY = L.oy + (t.y + R.y - BH) * ts;
     const it = t.item;
     if (t.t === TILE.BOARD && it && it.k === 'ing' && it.chop > 0 && it.state === 'raw') pbar(cx, topY - ts * 0.04, it.chop, '#3FAE6A');
     if (t.t === TILE.SINK && t.wash > 0) pbar(cx, topY - ts * 0.04, t.wash, '#4BA3E3');
-    if (t.t === TILE.SINK && t.dirty > 0) badge(L.ox + (t.x + 0.86) * ts, topY + ts * 0.12, Math.max(8, ts * 0.15), '#E2412F', String(t.dirty));
+    if (t.t === TILE.SINK && t.dirty > 0) badge(cx + ts * 0.36, topY + ts * 0.12, Math.max(8, ts * 0.15), '#E2412F', String(t.dirty));
     if (isCw(it)) cwStatus(it, cx, topY + ts * 0.02, t.t === TILE.STOVE);
   }
-  for (const c of G.chefs) if (isCw(c.hold)) cwStatus(c.hold, L.ox + c.x * ts, L.oy + (c.y - 1.2) * ts, false);
+  for (const c of G.chefs) if (isCw(c.hold) && !c.down) cwStatus(c.hold, L.ox + c.x * ts, L.oy + (c.y - 1.2) * ts, false);
 }
 function drawHintArrows() {
   if (G.hint < 0 || (G.state !== 'playing' && G.state !== 'countdown')) return;
@@ -3273,12 +3925,13 @@ function drawChefOverlays(tg) {
     for (const [t, id] of tg) {
       const name = t.t === TILE.CRATE ? ING[t.crate].name : TILE_NAME[t.t];
       if (!name || (t.item && t.t !== TILE.STOVE) || t.wash > 0 || (t.dirty > 0 && t.t === TILE.SINK) || G.chefs[id].work) continue;
-      const x = L.ox + (t.x + 0.5) * ts, y = L.oy + (t.y - BH) * ts - 3;
+      const R = tileRes(t), x = L.ox + (t.x + R.x + 0.5) * ts, y = L.oy + (t.y + R.y - BH) * ts - 3;
       if (t.t === TILE.STOVE && isCw(t.item) && t.item.items.length) continue;
       bubbleText(name, x, y, { fs: Math.max(10, fs - 2), bg: 'rgba(30,34,48,.82)', fg: '#FFFFFF' });
     }
   }
   for (const c of G.chefs) {
+    if (c.down > 0) continue;
     const x = L.ox + c.x * ts, top = L.oy + (c.y - 1.22) * ts;
     if (G.players === 2 && G.state !== 'demo') {
       const label = G.online ? (c === localChef() ? 'あなた' : 'なかま') : (c.id + 1) + 'P';
@@ -3654,6 +4307,7 @@ function grabLabel(c) {
 function actLabel(c) {
   const h = c.hold, t = c.target;
   if (h && h.k === 'ext') return 'けす';
+  if (G && canThrow(c)) return 'なげる';
   if (t && t.t === TILE.SINK) return 'あらう';
   return 'きる';
 }
@@ -3699,7 +4353,7 @@ function endFrameInput() { Keys.hit.clear(); Touch.grabHit = false; Touch.actHit
 // So that the guest never waits for that round trip, it carries out each press on its own copy
 // at once, and re-applies the presses the host has not confirmed yet on top of every snapshot.
 // Partners' chefs are drawn moving with their last known velocity between updates.
-const NET_V = 3;
+const NET_V = 4;
 const RIDS = Object.keys(RECIPES);
 const TCH = {
   tomato: 't', onion: 'o', mushroom: 'm', lettuce: 'l', meat: 'k', bun: 'b', fish: 'f', rice: 'r', nori: 'n', cucumber: 'c',
@@ -3714,7 +4368,7 @@ const STATE_CODE = { intro: 'i', countdown: 'c', playing: 'p', paused: 'z', time
 const CODE_STATE = { c: 'countdown', p: 'playing', z: 'paused', u: 'timeup', r: 'results' };
 const TERMINAL = ['revoked', 'not_granted', 'capability_disabled', 'capability_removed', 'transform_error'];
 // sounds the joined phone plays itself for its own chef, so the host does not send them back
-const PREDICTED_SFX = new Set(['pick', 'place', 'drop', 'plate', 'nope', 'trash', 'chop', 'wash', 'fry']);
+const PREDICTED_SFX = new Set(['pick', 'place', 'drop', 'plate', 'nope', 'trash', 'chop', 'wash', 'fry', 'throw', 'fall', 'pop', 'warp']);
 const SEND_MS = 30;
 
 const Net = {
@@ -3722,7 +4376,7 @@ const Net = {
   game: null, inLobby: false, role: null, code: '', partner: null, partnerSeenAt: 0, hosts: [],
   // host side
   lastSend: 0, lastJson: '', advKey: '', advAt: 0, gInObj: null, gTarget: null, gPeer: '',
-  pendG: 0, pendA: 0, lastG: 0, lastA: 0, gPose: null, aPose: null, acked: false, fwdMute: false, gTrack: mkTrack(),
+  pendG: 0, pendA: 0, lastG: 0, lastA: 0, gPose: null, aPose: null, acked: false, fwdMute: false, gTrack: mkTrack(), gFalls: 0,
   // guest side
   snapObj: null, snapAt: 0, full: false, lastEv: 0, gseq: 0, aseq: 0, held: false, sentAt: 0, sentKey: '', sentPress: '',
   hostState: '', hostStage: -1, hostGone: false, pend: [], myG: null, myA: null, rtt: 0, hTrack: mkTrack(), joinAt: 0, verBad: false,
@@ -3795,12 +4449,14 @@ function encodeSnap() {
     Math.round(ch.x * 100), Math.round(ch.y * 100), Math.round(ch.fx * 100), Math.round(ch.fy * 100),
     Math.round(ch.vx * 10), Math.round(ch.vy * 10), encItem(ch.hold), ch.work ? (ch.work.kind === 'chop' ? 1 : 2) : 0,
     ch.spraying ? 1 : 0, ch.sayT > 0 ? String(ch.say).slice(0, 20) : '', Math.max(0, Math.round(ch.sayT * 10)),
+    Math.round(ch.down * 10),
   ]);
   const o = G.orders.map(od => [RIDS.indexOf(od.id), Math.round(od.left * 10), Math.round(od.life * 10), Math.round(od.uid * 1e6)]);
   const s = {
     v: NET_V, m, sg: G.stageIdx, k: G.uid, t: Math.round(G.time * 10), cd: Math.round(G.countdown * 100),
     sc: G.score, cb: G.combo, fl: G.flash > 0 ? 1 : 0, hn: G.hint, tk: G.tipT > 0 ? G.tipKey : '', tt: Math.round(Math.max(0, G.tipT) * 10),
     c, o, tl, ev: G.evs.filter(e => G.t * 10 - e[1] < 25), pp: Net.partner || '',
+    fy: G.fly.slice(0, 8).map(p => [p.id, encItem(p.it), Math.round(p.x * 100), Math.round(p.y * 100), Math.round(p.dx * 100), Math.round(p.dy * 100), Math.round(p.d * 100)]),
     // how many of the guest's grab / action presses this state already includes
     ag: Net.lastG - Net.pendG, aa: Net.lastA - Net.pendA,
   };
@@ -3914,7 +4570,7 @@ function toLobby() {
   try { if (old && old !== Net.lobby && typeof old.leave === 'function') old.leave().catch(() => {}); } catch (e) {}
 }
 function resetHostInput() {
-  Object.assign(Net, { gInObj: null, gTarget: null, gPeer: '', pendG: 0, pendA: 0, lastG: 0, lastA: 0, gPose: null, aPose: null, acked: false, gTrack: mkTrack() });
+  Object.assign(Net, { gInObj: null, gTarget: null, gPeer: '', pendG: 0, pendA: 0, lastG: 0, lastA: 0, gPose: null, aPose: null, acked: false, gTrack: mkTrack(), gFalls: 0 });
 }
 async function netHost() {
   if (!Net.lobby || Net.busy || Net.role) return;
@@ -4025,7 +4681,7 @@ function hostSend(now, force) {
   const pres = { r: 'h', code: Net.code, s };
   let json = JSON.stringify(pres);
   if (!force && json === Net.lastJson && now - Net.lastSend < 1500) return;
-  if (json.length > 1200 && byteSize(pres) > 3800) { s.ev = []; if (byteSize(pres) > 3800) s.c.forEach(c => { c[9] = ''; }); json = JSON.stringify(pres); }
+  if (json.length > 1200 && byteSize(pres) > 3800) { s.ev = []; if (byteSize(pres) > 3800) s.c.forEach(c => { c[9] = ''; }); if (byteSize(pres) > 3800) s.fy = []; json = JSON.stringify(pres); }
   Net.lastSend = now; Net.lastJson = json;
   pres.ts = Math.round(performance.now());
   Net.game.presence(pres).catch(e => { if (e && TERMINAL.includes(e.code)) netFatal(e); });
@@ -4053,6 +4709,22 @@ function hostReadGuest(p, now) {
   if (mv !== Net.mateVer) { Net.mateVer = mv; if (UI.screen === 'select') renderNetChips(); if (UI.screen === 'intro') renderIntroNet(); }
   if (!Array.isArray(i) || i.length < 10 || !G || !G.online || G.netGuest) return;
   if (num(i[9]) !== G.uid) return;
+  // the partner's chef fell off: what it held is lost (its phone shows the fall itself)
+  const ch1 = G.chefs[1];
+  if (ch1 && i.length >= 20) {
+    const falls = num(i[18]);
+    if (falls < Net.gFalls) Net.gFalls = falls;
+    if (falls > Net.gFalls) {
+      Net.gFalls = falls;
+      Net.fwdMute = true;
+      try {
+        if (ch1.hold) loseItem(ch1.hold, ch1.x, ch1.y);
+        ch1.hold = null; ch1.work = null; ch1.spraying = false;
+        Sound.sfx.fall();
+      } finally { Net.fwdMute = false; }
+    }
+    ch1.down = clamp(num(i[19]) / 10, 0, DOWN_TIME);
+  }
   let fx = num(i[4]) / 100, fy = num(i[5]) / 100;
   const fm = Math.hypot(fx, fy);
   if (fm < 0.3) { fx = 0; fy = 1; } else { fx /= fm; fy /= fm; }
@@ -4080,8 +4752,9 @@ function trackAdd(tr, ts, p) {
   if (tr.pts.length && ts < tr.pts[tr.pts.length - 1].ts - 3000) { tr.pts = []; tr.off = null; }   // the other page restarted its clock
   const d = now - ts;
   if (tr.off === null || d < tr.off) tr.off = d;   // the quickest delivery seen so far
-  const last = tr.pts[tr.pts.length - 1];
+  let last = tr.pts[tr.pts.length - 1];
   if (last && ts <= last.ts) return;
+  if (last && Math.hypot(p.x - last.x, p.y - last.y) > 2) { tr.pts = []; last = null; }
   // to never run dry, the cushion must cover this update's extra delay plus the wait since the one before
   const want = Math.min(400, d - tr.off) + Math.min(80, last ? ts - last.ts : 33);
   if (want > tr.need) tr.need = want;
@@ -4116,7 +4789,8 @@ function followTrack(c, tr, dt) {
   if (!p) { c.vx = 0; c.vy = 0; return; }
   c.x = p.x; c.y = p.y; c.vx = p.vx; c.vy = p.vy;
   if (Math.hypot(p.fx, p.fy) > 0.3) { c.fx = p.fx; c.fy = p.fy; }
-  collide(c, false);
+  // (on a sky stage its own phone knows best where it stands: islands, edges, falls)
+  if (!G.sky) collide(c, false);
   const v = Math.hypot(c.vx, c.vy);
   if (v > 0.4) c.walkT += dt * v;
 }
@@ -4143,6 +4817,12 @@ function remoteMove(c, dt) {
 // Presses act where the phone's chef stood when it pressed; chopping and washing go on while the
 // phone's latest position still has the chef at that station. The drawn chef trails a little behind.
 function remoteAct(c, dt) {
+  // a fallen chef does nothing until it is back (its phone sends no presses meanwhile)
+  if (c.down > 0) {
+    if (Net.pendG || Net.pendA) { Net.pendG = 0; Net.pendA = 0; Net.acked = true; }
+    c.target = null; c.work = null; c.spraying = false;
+    return;
+  }
   Net.fwdMute = true;
   try {
     if (Net.pendG > 0) { Net.pendG--; Net.acked = true; withPose(c, Net.gPose, () => { c.target = findTarget(c); beltCatch(c); doGrab(c); }); }
@@ -4171,7 +4851,7 @@ function guestSend(now) {
   const me = G && G.netGuest ? G.chefs[1] : null;
   const P = q => q ? [Math.round(q.x * 100), Math.round(q.y * 100), Math.round(q.fx * 100), Math.round(q.fy * 100)] : [0, 0, 0, 0];
   const i = me
-    ? [Math.round(me.x * 100), Math.round(me.y * 100), Math.round(me.vx * 100), Math.round(me.vy * 100), Math.round(me.fx * 100), Math.round(me.fy * 100), Net.gseq, Net.aseq, Net.held ? 1 : 0, G.uid].concat(P(Net.myG), P(Net.myA))
+    ? [Math.round(me.x * 100), Math.round(me.y * 100), Math.round(me.vx * 100), Math.round(me.vy * 100), Math.round(me.fx * 100), Math.round(me.fy * 100), Net.gseq, Net.aseq, Net.held ? 1 : 0, G.uid].concat(P(Net.myG), P(Net.myA), [me.falls, Math.round(me.down * 10)])
     : [0, 0, 0, 0, 0, 100, 0, 0, 0, 0];
   const key = i.join(','), press = Net.gseq + ':' + Net.aseq;
   if (key === Net.sentKey && now - Net.sentAt < 2000) return;
@@ -4223,8 +4903,9 @@ function decodeInto(s, now, ts) {
     if (typeof str !== 'string') continue;
     const f = str.split(':');
     const t = G.list[parseInt(f[0], 10)];
-    if (!t || isWalk(t.t)) continue;
+    if (!t || t.t === TILE.SKY) continue;
     t.item = decItem(f[1]);
+    if (isWalk(t.t)) continue;
     t.fire = f[2] ? { hp: clamp((parseInt(f[2], 10) || 0) / 100, 0, 1), spread: 99, t: 0 } : null;
     t.rack = clamp(parseInt(f[3], 10) || 0, 0, 20);
     t.dirty = clamp(parseInt(f[4], 10) || 0, 0, 20);
@@ -4245,6 +4926,7 @@ function decodeInto(s, now, ts) {
     const x = clamp(num(a[0]) / 100, 0.3, G.cols - 0.3), y = clamp(num(a[1]) / 100, 0.3, G.rows - 0.3);
     if (i === 0) {
       ch.spraying = !!a[8];
+      ch.down = clamp(num(a[11]) / 10, 0, DOWN_TIME);
       trackAdd(Net.hTrack, ts, { x, y, vx: num(a[4]) / 10, vy: num(a[5]) / 10, fx: num(a[2]) / 100, fy: num(a[3]) / 100 });
     } else if (G.state === 'countdown') { ch.x = x; ch.y = y; }   // while playing, this device owns its chef
   });
@@ -4258,9 +4940,15 @@ function decodeInto(s, now, ts) {
     Net.lastEv = num(ev[0]);
     guestEvent(ev);
   }
+  G.fly = (Array.isArray(s.fy) ? s.fy : []).filter(Array.isArray).map(a => {
+    const it = decItem(a[1]), dx = num(a[4]) / 100, dy = num(a[5]) / 100;
+    return it ? { id: String(a[0]), it, x: num(a[2]) / 100, y: num(a[3]) / 100, dx, dy, d: num(a[6]) / 100, lock: null } : null;
+  }).filter(Boolean);
   // presses the host has now applied are done; the rest go back on top of its state
   if (G.state === 'playing') {
     const ag = num(s.ag), aa = num(s.aa);
+    // my own throws: shown until the host has made them (then they are in its list, or landed)
+    G.pfly = G.pfly.filter(p => p.n > aa && !G.fly.some(q => q.id === p.id));
     Net.pend = Net.pend.filter(q => {
       const done = q.n <= (q.k === 'g' ? ag : aa);
       if (done) Net.rtt = Net.rtt ? Net.rtt * 0.8 + (now - q.at) * 0.2 : now - q.at;
@@ -4337,23 +5025,34 @@ function guestEvent(ev) {
     worldFloat(num(ev[3]) / 100, num(ev[4]) / 100, String(ev[5] || '').slice(0, 24), col, clamp(num(ev[7]) / 100 || 1, 0.5, 1.5));
   } else if (type === 'p') {
     sparkle(num(ev[3]) / 100, num(ev[4]) / 100);
+  } else if (type === 'd') {
+    const it = decItem(ev[5]);
+    if (it) { G.drops.push({ it, x: num(ev[3]) / 100, y: num(ev[4]) / 100, t: 0 }); if (G.drops.length > 12) G.drops.shift(); }
   }
 }
 // the guest's frame: move my chef and act at once, glide the host's chef, keep the kitchen alive between snapshots
 function guestStep(dt) {
   G.t += dt;
   const me = G.chefs[1], other = G.chefs[0];
+  updateIslands(dt, [me]);
   followTrack(other, Net.hTrack, dt);
-  if (G.state === 'playing' && !Net.hostGone) {
+  if (G.state === 'playing' && !Net.hostGone && me.down > 0) {
+    readInput(0); downTick(me, dt); Net.held = false;
+  } else if (G.state === 'playing' && !Net.hostGone) {
     const inp = readInput(0);
     moveChef(me, inp.mx, inp.my, dt);
+    afterMove(me);
     chefPush();
     me.target = findTarget(me);
-    if (inp.grab) guestPress(me, 'g');
-    if (inp.act) guestPress(me, 'a');
-    Net.held = inp.actHeld;
-    me.spraying = !!(me.hold && me.hold.k === 'ext' && inp.actHeld);
+    if (!me.down) {
+      if (inp.grab) guestPress(me, 'g');
+      if (inp.act) guestPress(me, 'a');
+    }
+    Net.held = inp.actHeld && !me.down;
+    me.spraying = !!(me.hold && me.hold.k === 'ext' && Net.held);
   } else { me.vx = 0; me.vy = 0; Net.held = false; me.spraying = false; }
+  flyVisual(G.fly, dt);
+  flyVisual(G.pfly, dt);
   me.target = findTarget(me);
   other.target = findTarget(other);
   if (me.work && !workOk(me)) me.work = null;
@@ -5025,9 +5724,10 @@ function recipeRow(id) {
     `<div class="flow">${flow}</div><div class="rcp-how">${r.how}</div></div></li>`;
 }
 function ctrlText() {
-  if (Touch.enabled) return '左側をドラッグで移動。黄色のボタンで取る・置く、赤いボタンで切る・洗う・消火。';
-  if (UI.mode === 2 && Net.role !== 'host') return '1P：WASD で移動、Space で取る・置く、左Shift で切る・洗う・消火 ／ 2P：矢印で移動、Enter と 右Shift ／ ゲームパッド：A と X';
-  return '移動は WASD か矢印。Space で取る・置く、Shift で切る・洗う・消火。ゲームパッドは A と X。';
+  const act = '切る・洗う・消火' + (G && G.stage.throw ? '・投げる' : '');
+  if (Touch.enabled) return `左側をドラッグで移動。黄色のボタンで取る・置く、赤いボタンで${act}。`;
+  if (UI.mode === 2 && Net.role !== 'host') return `1P：WASD で移動、Space で取る・置く、左Shift で${act} ／ 2P：矢印で移動、Enter と 右Shift ／ ゲームパッド：A と X`;
+  return `移動は WASD か矢印。Space で取る・置く、Shift で${act}。ゲームパッドは A と X。`;
 }
 function renderIntroNet() {
   const el = $('#i-net');
