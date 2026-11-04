@@ -4392,7 +4392,7 @@ function endFrameInput() { Keys.hit.clear(); Touch.grabHit = false; Touch.actHit
 // So that the guest never waits for that round trip, it carries out each press on its own copy
 // at once, and re-applies the presses the host has not confirmed yet on top of every snapshot.
 // Partners' chefs are drawn moving with their last known velocity between updates.
-const NET_V = 4;
+const NET_V = 5;
 const RIDS = Object.keys(RECIPES);
 const TCH = {
   tomato: 't', onion: 'o', mushroom: 'm', lettuce: 'l', meat: 'k', bun: 'b', fish: 'f', rice: 'r', nori: 'n', cucumber: 'c',
